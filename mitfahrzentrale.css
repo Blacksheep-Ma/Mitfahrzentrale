@@ -1,0 +1,201 @@
+.mfz-institution-view > article,
+.mfz-events > article.mfz-event,
+.mfz-admin-view > .mfz-admin-day {
+	margin: 0 0 24px;
+	padding: 16px;
+	border: 1px solid #ccd0d4;
+	border-radius: 6px;
+	background: #fafafa;
+}
+
+.mfz-institution-view > article > h3,
+.mfz-events > article.mfz-event > h3,
+.mfz-admin-view > .mfz-admin-day > summary h3 {
+	margin-top: 0;
+}
+
+.mfz-institution-view form {
+	display: block;
+	margin: 16px 0 !important;
+	padding: 12px !important;
+	border: 1px solid #dcdcde !important;
+	border-radius: 5px;
+	background: #fff;
+}
+
+.mfz-events .mfz-slot,
+.mfz-admin-view .mfz-slot {
+	margin: 16px 0;
+	padding: 12px;
+	border: 1px solid #dcdcde;
+	border-radius: 5px;
+	background: #fff;
+}
+
+.mfz-events .mfz-slot {
+	position: relative;
+	min-height: 150px;
+	padding-right: 210px;
+	padding-bottom: 58px;
+	line-height: 1.6;
+}
+
+.mfz-events .mfz-slot h4 {
+	line-height: 1.25;
+}
+
+.mfz-events .mfz-slot form {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	float: none;
+	display: block !important;
+	margin: 0 !important;
+	vertical-align: bottom;
+}
+
+.mfz-events .mfz-slot::after {
+	content: "";
+	display: block;
+	clear: both;
+}
+
+.mfz-bike-image-wrapper {
+	position: absolute;
+	top: 12px;
+	right: 12px;
+	display: block;
+	margin: 0;
+}
+
+.mfz-bike-image {
+	display: block;
+	width: auto;
+	max-width: 180px;
+	height: auto;
+	max-height: 100px;
+	object-fit: contain;
+	border-radius: 4px;
+}
+
+.mfz-driver-calendar {
+	width: 100%;
+	max-width: none;
+	box-sizing: border-box;
+	margin: 0 0 24px;
+	padding: 12px;
+	border: 1px solid #ccd0d4;
+	border-radius: 6px;
+	background: #fafafa;
+}
+
+.mfz-calendar-header {
+	display: grid;
+	grid-template-columns: 36px 1fr 36px;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+	text-align: center;
+}
+
+.mfz-calendar-header button {
+	padding: 2px 8px;
+}
+
+.mfz-calendar-weekdays,
+.mfz-calendar-days {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	gap: 4px;
+	text-align: center;
+}
+
+.mfz-calendar-weekdays {
+	margin-bottom: 4px;
+	font-size: .85em;
+	font-weight: bold;
+}
+
+.mfz-calendar-days button {
+	min-height: 32px;
+	padding: 4px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	background: #fff;
+	cursor: pointer;
+}
+
+.mfz-calendar-days .mfz-planned-day {
+	border-color: #168a35;
+	background: #d9f2df;
+	font-weight: bold;
+}
+
+.mfz-calendar-days .mfz-selected-day {
+	outline: 2px solid #2271b1;
+	outline-offset: 1px;
+}
+
+.mfz-calendar-empty {
+	min-height: 32px;
+}
+
+@media (max-width: 600px) {
+	.mfz-events .mfz-slot {
+		min-height: 0;
+		padding-right: 12px;
+		padding-bottom: 12px;
+	}
+
+	.mfz-events .mfz-slot form {
+		position: static;
+		float: none;
+		margin: 10px 0 0 !important;
+	}
+
+	.mfz-bike-image-wrapper {
+		position: static;
+		margin: 10px 0;
+	}
+
+	.mfz-bike-image {
+		max-width: 100%;
+		max-height: 180px;
+	}
+}
+
+@media print {
+	@page {
+		margin: 10mm;
+	}
+
+	html,
+	body {
+		margin: 0 !important;
+		padding: 0 !important;
+	}
+
+	body * {
+		visibility: hidden !important;
+	}
+
+	.mfz-admin-view .mfz-print-target,
+	.mfz-admin-view .mfz-print-target * {
+		visibility: visible !important;
+	}
+
+	.mfz-admin-view .mfz-print-target {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 100%;
+		margin: 0 !important;
+		border: 0 !important;
+		background: #fff !important;
+	}
+
+	.mfz-admin-view .mfz-print-day,
+	.mfz-admin-view .mfz-send-confirmation {
+		display: none !important;
+	}
+}
