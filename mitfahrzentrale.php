@@ -24,6 +24,7 @@ final class MFZ_Mitfahrzentrale {
 	const META_DATE = '_mfz_date';
 	const META_LOCATION = '_mfz_location';
 	const META_SLOTS = '_mfz_slots';
+	const OPTION_VIEW_ROLES = '_mfz_view_roles';
 
 	public static function init() {
 		add_action( 'init', array( __CLASS__, 'register_post_type' ) );
@@ -34,7 +35,7 @@ final class MFZ_Mitfahrzentrale {
 		add_shortcode( 'mitfahrzentrale_institution', array( __CLASS__, 'institution_shortcode' ) );
 		add_shortcode( 'mitfahrzentrale_mitfahrer', array( __CLASS__, 'passenger_management_shortcode' ) );
 		add_shortcode( 'mitfahrzentrale_admin', array( __CLASS__, 'admin_shortcode' ) );
-		add_action( 'wp_head', array( __CLASS__, 'frontend_styles' ) );
+		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_styles' ) );
 		add_action( 'admin_post_mfz_signup', array( __CLASS__, 'signup' ) );
 		add_action( 'admin_post_mfz_withdraw', array( __CLASS__, 'withdraw' ) );
 		add_action( 'admin_post_mfz_send_confirmation', array( __CLASS__, 'send_confirmation' ) );
@@ -42,6 +43,8 @@ final class MFZ_Mitfahrzentrale {
 		add_action( 'admin_post_mfz_add_passenger', array( __CLASS__, 'add_passenger' ) );
 		add_action( 'admin_post_mfz_remove_passenger', array( __CLASS__, 'remove_passenger' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'admin_notice' ) );
+		add_action( 'admin_menu', array( __CLASS__, 'admin_menu' ) );
+		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
 		add_action( 'add_meta_boxes_' . self::INSTITUTION_POST_TYPE, array( __CLASS__, 'add_institution_meta_boxes' ) );
 		add_action( 'save_post_' . self::INSTITUTION_POST_TYPE, array( __CLASS__, 'save_institution' ), 10, 2 );
 	}
@@ -79,6 +82,72 @@ final class MFZ_Mitfahrzentrale {
 			'menu_icon' => 'dashicons-building', 'supports' => array( 'title', 'editor' ),
 			'capability_type' => 'post', 'map_meta_cap' => true,
 		) );
+	}
+
+	public static function admin_menu() {
+		add_submenu_page( 'edit.php?post_type=' . self::POST_TYPE, 'Berechtigungen', 'Berechtigungen', 'manage_options', 'mfz-permissions', array( __CLASS__, 'permissions_page' ) );
+	}
+
+	public static function register_settings() {
+		register_setting( 'mfz_permissions', self::OPTION_VIEW_ROLES, array( 'sanitize_callback' => array( __CLASS__, 'sanitize_view_roles' ), 'default' => self::default_view_roles() ) );
+	}
+
+	private static function default_view_roles() {
+		$roles = array_keys( wp_roles()->roles );
+		return array( 'driver' => $roles, 'institution' => $roles, 'admin' => array( 'administrator' ) );
+	}
+
+	public static function sanitize_view_roles( $value ) {
+		$valid_roles = array_keys( wp_roles()->roles );
+		$sanitized = array();
+		foreach ( array( 'driver', 'institution', 'admin' ) as $view ) {
+			$selected = isset( $value[ $view ] ) ? (array) $value[ $view ] : array();
+			$sanitized[ $view ] = array_values( array_intersect( array_map( 'sanitize_key', $selected ), $valid_roles ) );
+		}
+		return $sanitized;
+	}
+
+	private static function can_view( $view ) {
+		if ( ! is_user_logged_in() ) {
+			return false;
+		}
+		$settings = get_option( self::OPTION_VIEW_ROLES, self::default_view_roles() );
+		$allowed_roles = array_map( 'sanitize_key', (array) ( $settings[ $view ] ?? array() ) );
+		return (bool) array_intersect( wp_get_current_user()->roles, $allowed_roles );
+	}
+
+	public static function permissions_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$roles = wp_roles()->roles;
+		$settings = get_option( self::OPTION_VIEW_ROLES, self::default_view_roles() );
+		$views = array( 'driver' => 'Fahreransicht', 'institution' => 'Institutionsseite', 'admin' => 'Organisatorseite' );
+		?>
+		<div class="wrap">
+			<h1>Mitfahrzentrale – Berechtigungen</h1>
+			<p>Wählen Sie aus, welche WordPress-Rollen die jeweilige Seite anzeigen dürfen.</p>
+			<form method="post" action="options.php">
+				<?php settings_fields( 'mfz_permissions' ); ?>
+				<table class="form-table" role="presentation">
+					<?php foreach ( $views as $view => $label ) : ?>
+						<tr>
+							<th scope="row"><?php echo esc_html( $label ); ?></th>
+							<td>
+								<?php foreach ( $roles as $role_key => $role ) : ?>
+									<label style="display:block;margin-bottom:6px">
+										<input type="checkbox" name="<?php echo esc_attr( self::OPTION_VIEW_ROLES . '[' . $view . '][]' ); ?>" value="<?php echo esc_attr( $role_key ); ?>" <?php checked( in_array( $role_key, (array) ( $settings[ $view ] ?? array() ), true ) ); ?> />
+										<?php echo esc_html( translate_user_role( $role['name'] ) ); ?>
+									</label>
+								<?php endforeach; ?>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</table>
+				<?php submit_button(); ?>
+			</form>
+		</div>
+		<?php
 	}
 
 	public static function add_meta_boxes() {
@@ -145,6 +214,22 @@ final class MFZ_Mitfahrzentrale {
 				'order' => 'ASC',
 			)
 		);
+	}
+
+	private static function item_image( $item_id ) {
+		$item_id = absint( $item_id );
+		$thumbnail_id = $item_id ? get_post_thumbnail_id( $item_id ) : 0;
+		if ( ! $thumbnail_id ) {
+			return '';
+		}
+
+		$image = wp_get_attachment_image( $thumbnail_id, 'medium', false, array(
+			'class'   => 'mfz-bike-image',
+			'loading' => 'lazy',
+			'alt'     => get_the_title( $item_id ),
+		) );
+
+		return $image ? '<span class="mfz-bike-image-wrapper">' . $image . '</span>' : '';
 	}
 
 	private static function locations() {
@@ -409,12 +494,22 @@ final class MFZ_Mitfahrzentrale {
 		self::redirect( 'passenger_removed' );
 	}
 
+	public static function enqueue_styles() {
+		wp_enqueue_style(
+			'mfz-frontend',
+			plugin_dir_url( __FILE__ ) . 'mitfahrzentrale.css',
+			array(),
+			'0.1.0'
+		);
+	}
+
 	public static function frontend_styles() {
-		echo '<style>.mfz-institution-view > article,.mfz-events > article.mfz-event,.mfz-admin-view > .mfz-admin-day{margin:0 0 24px;padding:16px;border:1px solid #ccd0d4;border-radius:6px;background:#fafafa}.mfz-institution-view > article > h3,.mfz-events > article.mfz-event > h3,.mfz-admin-view > .mfz-admin-day > summary h3{margin-top:0}.mfz-institution-view form{display:block;margin:16px 0!important;padding:12px!important;border:1px solid #dcdcde!important;border-radius:5px;background:#fff}.mfz-events .mfz-slot,.mfz-admin-view .mfz-slot{margin:16px 0;padding:12px;border:1px solid #dcdcde;border-radius:5px;background:#fff}.mfz-events .mfz-slot form{float:right;display:block!important;margin:0 0 0 12px!important;vertical-align:bottom}.mfz-events .mfz-slot:after{content:"";display:block;clear:both}.mfz-driver-calendar{width:100%;max-width:none;box-sizing:border-box;margin:0 0 24px;padding:12px;border:1px solid #ccd0d4;border-radius:6px;background:#fafafa}.mfz-calendar-header{display:grid;grid-template-columns:36px 1fr 36px;align-items:center;gap:8px;text-align:center;margin-bottom:8px}.mfz-calendar-header button{padding:2px 8px}.mfz-calendar-weekdays,.mfz-calendar-days{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}.mfz-calendar-weekdays{font-size:.85em;font-weight:bold;margin-bottom:4px}.mfz-calendar-days button{min-height:32px;padding:4px;border:1px solid transparent;border-radius:4px;background:#fff;cursor:pointer}.mfz-calendar-days .mfz-planned-day{background:#d9f2df;border-color:#168a35;font-weight:bold}.mfz-calendar-days .mfz-selected-day{outline:2px solid #2271b1;outline-offset:1px}.mfz-calendar-empty{min-height:32px}@media print{@page{margin:10mm}html,body{margin:0!important;padding:0!important}body *{visibility:hidden!important}.mfz-admin-view .mfz-print-target,.mfz-admin-view .mfz-print-target *{visibility:visible!important}.mfz-admin-view .mfz-print-target{position:absolute;left:0;top:0;width:100%;margin:0!important;border:0!important;background:#fff!important}.mfz-admin-view .mfz-print-day,.mfz-admin-view .mfz-send-confirmation{display:none!important}}</style>';
+		return;
+		echo '<style>.mfz-institution-view > article,.mfz-events > article.mfz-event,.mfz-admin-view > .mfz-admin-day{margin:0 0 24px;padding:16px;border:1px solid #ccd0d4;border-radius:6px;background:#fafafa}.mfz-institution-view > article > h3,.mfz-events > article.mfz-event > h3,.mfz-admin-view > .mfz-admin-day > summary h3{margin-top:0}.mfz-institution-view form{display:block;margin:16px 0!important;padding:12px!important;border:1px solid #dcdcde!important;border-radius:5px;background:#fff}.mfz-events .mfz-slot,.mfz-admin-view .mfz-slot{margin:16px 0;padding:12px;border:1px solid #dcdcde;border-radius:5px;background:#fff}.mfz-events .mfz-slot{position:relative;min-height:150px;padding-right:210px;padding-bottom:58px;line-height:1.6}.mfz-events .mfz-slot h4{line-height:1.25}.mfz-events .mfz-slot form{position:absolute;right:12px;bottom:12px;float:none;display:block!important;margin:0!important;vertical-align:bottom}.mfz-events .mfz-slot:after{content:"";display:block;clear:both}.mfz-bike-image-wrapper{position:absolute;top:12px;right:12px;display:block;margin:0}.mfz-bike-image{display:block;width:auto;max-width:180px;height:auto;max-height:100px;object-fit:contain;border-radius:4px}.mfz-driver-calendar{width:100%;max-width:none;box-sizing:border-box;margin:0 0 24px;padding:12px;border:1px solid #ccd0d4;border-radius:6px;background:#fafafa}.mfz-calendar-header{display:grid;grid-template-columns:36px 1fr 36px;align-items:center;gap:8px;text-align:center;margin-bottom:8px}.mfz-calendar-header button{padding:2px 8px}.mfz-calendar-weekdays,.mfz-calendar-days{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}.mfz-calendar-weekdays{font-size:.85em;font-weight:bold;margin-bottom:4px}.mfz-calendar-days button{min-height:32px;padding:4px;border:1px solid transparent;border-radius:4px;background:#fff;cursor:pointer}.mfz-calendar-days .mfz-planned-day{background:#d9f2df;border-color:#168a35;font-weight:bold}.mfz-calendar-days .mfz-selected-day{outline:2px solid #2271b1;outline-offset:1px}.mfz-calendar-empty{min-height:32px}@media (max-width:600px){.mfz-events .mfz-slot{min-height:0;padding-right:12px;padding-bottom:12px}.mfz-events .mfz-slot form{position:static;float:none;margin:10px 0 0!important}.mfz-bike-image-wrapper{position:static;margin:10px 0}.mfz-bike-image{max-width:100%;max-height:180px}}@media print{@page{margin:10mm}html,body{margin:0!important;padding:0!important}body *{visibility:hidden!important}.mfz-admin-view .mfz-print-target,.mfz-admin-view .mfz-print-target *{visibility:visible!important}.mfz-admin-view .mfz-print-target{position:absolute;left:0;top:0;width:100%;margin:0!important;border:0!important;background:#fff!important}.mfz-admin-view .mfz-print-day,.mfz-admin-view .mfz-send-confirmation{display:none!important}}</style>';
 	}
 
 	public static function admin_shortcode( $atts ) {
-		if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
+		if ( ! self::can_view( 'admin' ) ) {
 			return '<p>Für diese Organisatoransicht ist keine Berechtigung vorhanden.</p>';
 		}
 		$show_past = isset( $_GET['mfz_show_past'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['mfz_show_past'] ) );
@@ -487,7 +582,7 @@ final class MFZ_Mitfahrzentrale {
 
 	public static function passenger_management_shortcode( $atts ) {
 		$location_id = self::user_institution_id( get_current_user_id() );
-		if ( ! is_user_logged_in() || ! $location_id || ! self::can_manage_institution( $location_id ) ) return '<p>Für diese Institutionsansicht ist keine Berechtigung oder Institution hinterlegt.</p>';
+		if ( ! self::can_view( 'institution' ) || ! $location_id || ! self::can_manage_institution( $location_id ) ) return '<p>Für diese Institutionsansicht ist keine Berechtigung oder Institution hinterlegt.</p>';
 		ob_start(); echo '<div class="mfz-passenger-management"><h2>Mitfahrer – ' . esc_html( get_the_title( $location_id ) ) . '</h2><p><strong>Adresse:</strong> ' . esc_html( self::institution_address( $location_id ) ?: 'nicht hinterlegt' ) . '</p><form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">'; wp_nonce_field( 'mfz_manage_passengers', 'mfz_passenger_nonce' ); echo '<input type="hidden" name="action" value="mfz_add_passenger"><input type="hidden" name="institution_id" value="' . $location_id . '"><input type="text" name="passenger_name" required placeholder="Name des Mitfahrers"><button type="submit">Mitfahrer hinzufügen</button></form><table><thead><tr><th>Name</th><th>Aktion</th></tr></thead><tbody>';
 		foreach ( (array) get_post_meta( $location_id, self::META_PASSENGERS, true ) as $passenger_id => $name ) { echo '<tr><td>' . esc_html( $name ) . '</td><td><form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">'; wp_nonce_field( 'mfz_manage_passengers', 'mfz_passenger_nonce' ); echo '<input type="hidden" name="action" value="mfz_remove_passenger"><input type="hidden" name="institution_id" value="' . $location_id . '"><input type="hidden" name="passenger_id" value="' . absint( $passenger_id ) . '"><button type="submit">Entfernen</button></form></td></tr>'; }
 		echo '</tbody></table></div>'; return ob_get_clean();
@@ -495,7 +590,7 @@ final class MFZ_Mitfahrzentrale {
 
 	public static function institution_shortcode( $atts ) {
 		$location_id = self::user_institution_id( get_current_user_id() );
-		if ( ! is_user_logged_in() || ! $location_id || ! self::can_manage_institution( $location_id ) ) return '<p>Für diese Institutionsansicht ist keine Berechtigung oder Institution hinterlegt.</p>';
+		if ( ! self::can_view( 'institution' ) || ! $location_id || ! self::can_manage_institution( $location_id ) ) return '<p>Für diese Institutionsansicht ist keine Berechtigung oder Institution hinterlegt.</p>';
 		$query = new WP_Query( array( 'post_type' => self::POST_TYPE, 'post_status' => 'publish', 'posts_per_page' => -1, 'meta_query' => array( array( 'key' => self::META_LOCATION, 'value' => $location_id, 'compare' => '=' ), array( 'key' => self::META_DATE, 'value' => current_time( 'Y-m-d' ), 'compare' => '>=', 'type' => 'DATE' ) ), 'orderby' => 'meta_value', 'meta_key' => self::META_DATE, 'order' => 'ASC' ) );
 		ob_start(); echo '<div class="mfz-institution-view"><h2>Mitfahrer – ' . esc_html( get_the_title( $location_id ) ) . '</h2><p><strong>Adresse:</strong> ' . esc_html( self::institution_address( $location_id ) ?: 'nicht hinterlegt' ) . '</p>';
 		if ( ! $query->have_posts() ) echo '<p>Keine Termine für diese Institution vorhanden.</p>';
@@ -510,6 +605,9 @@ final class MFZ_Mitfahrzentrale {
 	}
 
 	public static function shortcode() {
+		if ( ! self::can_view( 'driver' ) ) {
+			return '<p>Für diese Fahreransicht ist keine Berechtigung vorhanden.</p>';
+		}
 		$query = new WP_Query( array( 'post_type' => self::POST_TYPE, 'post_status' => 'publish', 'posts_per_page' => -1, 'meta_query' => array( array( 'key' => self::META_DATE, 'value' => current_time( 'Y-m-d' ), 'compare' => '>=', 'type' => 'DATE' ) ), 'meta_key' => self::META_DATE, 'orderby' => 'meta_value', 'order' => 'ASC' ) );
 		ob_start();
 		echo '<div class="mfz-events"><div class="mfz-driver-calendar" aria-label="Kalender für geplante Termine"><div class="mfz-calendar-header"><button type="button" class="mfz-calendar-prev" aria-label="Vorheriger Monat">‹</button><strong class="mfz-calendar-month"></strong><button type="button" class="mfz-calendar-next" aria-label="Nächster Monat">›</button></div><div class="mfz-calendar-weekdays"><span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span></div><div class="mfz-calendar-days"></div></div>';
@@ -520,7 +618,7 @@ final class MFZ_Mitfahrzentrale {
 			 echo '<article class="mfz-event"><h3>' . esc_html( get_the_title() ) . '</h3><p><strong>Datum:</strong> ' . esc_html( get_post_meta( $id, self::META_DATE, true ) ) . '</p><p><strong>Standort:</strong> ' . esc_html( $location_id ? get_the_title( $location_id ) : 'nicht festgelegt' ) . '<br><strong>Adresse:</strong> ' . esc_html( $street ?: ( $location_id ? self::institution_address( $location_id ) : 'nicht hinterlegt' ) ) . ( $postcode_city ? '<br>' . esc_html( $postcode_city ) : '' ) . '</p>';
 			if ( $item_ids ) { echo '<p><strong>Fahrräder:</strong> ' . esc_html( implode( ', ', array_filter( array_map( 'get_the_title', $item_ids ) ) ) ) . '</p>'; }
 			$current_user_id = get_current_user_id(); $current_user_location = absint( get_user_meta( $current_user_id, '_mfz_location_id', true ) );
-			$slot_number = 1; foreach ( (array) $slots as $index => $slot ) { $driver_id = absint( $slot['driver_id'] ?? 0 ); $mine = $driver_id === $current_user_id; $item_id = absint( $slot['item_id'] ?? 0 ); $capacity = absint( $slot['passenger_count'] ?? 0 ); $passenger_ids = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $passenger_count = count( array_filter( $passenger_ids ) ); $complete = $driver_id > 0 && $passenger_count >= $capacity; echo '<div class="mfz-slot"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ); if ( $item_id ) { echo '<br><strong>Fahrrad:</strong> ' . esc_html( get_the_title( $item_id ) ); } echo '<br><strong>Mitfahrer:</strong> ' . $passenger_count . '/' . $capacity . '<br><strong>Fahrer:</strong> ' . esc_html( $driver_id ? get_the_author_meta( 'display_name', $driver_id ) : 'noch frei' ); if ( is_user_logged_in() && ( $mine || ! $driver_id ) ) { echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline;margin-left:10px">'; wp_nonce_field( 'mfz_slot_action', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="' . ( $mine ? 'mfz_withdraw' : 'mfz_signup' ) . '"><input type="hidden" name="event_id" value="' . $id . '"><input type="hidden" name="slot_index" value="' . $index . '"><button type="submit">' . ( $mine ? 'Als Fahrer austragen' : 'Als Fahrer eintragen' ) . '</button></form>'; } echo '</div>'; }
+			$slot_number = 1; foreach ( (array) $slots as $index => $slot ) { $driver_id = absint( $slot['driver_id'] ?? 0 ); $mine = $driver_id === $current_user_id; $item_id = absint( $slot['item_id'] ?? 0 ); $capacity = absint( $slot['passenger_count'] ?? 0 ); $passenger_ids = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $passenger_count = count( array_filter( $passenger_ids ) ); $complete = $driver_id > 0 && $passenger_count >= $capacity; echo '<div class="mfz-slot"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ); if ( $item_id ) { echo '<br><strong>Fahrrad:</strong> ' . esc_html( get_the_title( $item_id ) ) . self::item_image( $item_id ); } echo '<br><strong>Mitfahrer:</strong> ' . $passenger_count . '/' . $capacity . '<br><strong>Fahrer:</strong> ' . esc_html( $driver_id ? get_the_author_meta( 'display_name', $driver_id ) : 'noch frei' ); if ( is_user_logged_in() && ( $mine || ! $driver_id ) ) { echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline;margin-left:10px">'; wp_nonce_field( 'mfz_slot_action', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="' . ( $mine ? 'mfz_withdraw' : 'mfz_signup' ) . '"><input type="hidden" name="event_id" value="' . $id . '"><input type="hidden" name="slot_index" value="' . $index . '"><button type="submit">' . ( $mine ? 'Als Fahrer austragen' : 'Als Fahrer eintragen' ) . '</button></form>'; } echo '</div>'; }
 			echo '</article>'; }
 		wp_reset_postdata(); echo '</div><script>(function(){var calendar=document.querySelector(".mfz-driver-calendar");if(!calendar)return;var events=Array.from(document.querySelectorAll(".mfz-events > article.mfz-event")),planned={};events.forEach(function(article){var match=article.textContent.match(/\\d{4}-\\d{2}-\\d{2}/);if(match){article.dataset.mfzDate=match[0];planned[match[0]]=true;}});var requested=new URLSearchParams(window.location.search).get("mfz_date"),selected=requested&&planned[requested]?requested:(events.length?events[0].dataset.mfzDate:null),current=new Date(selected?selected+"T12:00:00":new Date());function pad(number){return String(number).padStart(2,"0");}function dateKey(date){return date.getFullYear()+"-"+pad(date.getMonth()+1)+"-"+pad(date.getDate());}function selectDay(date){selected=date;events.forEach(function(article){article.style.display=article.dataset.mfzDate===date?"block":"none";});render();}function render(){var year=current.getFullYear(),month=current.getMonth(),first=new Date(year,month,1),last=new Date(year,month+1,0),offset=(first.getDay()+6)%7,days=calendar.querySelector(".mfz-calendar-days");calendar.querySelector(".mfz-calendar-month").textContent=current.toLocaleDateString("de-DE",{month:"long",year:"numeric"});days.innerHTML="";for(var i=0;i<offset;i++)days.insertAdjacentHTML("beforeend","<span class=\"mfz-calendar-empty\"></span>");for(var day=1;day<=last.getDate();day++){var key=dateKey(new Date(year,month,day)),button=document.createElement("button");button.type="button";button.textContent=day;button.dataset.date=key;if(planned[key])button.classList.add("mfz-planned-day");if(key===selected)button.classList.add("mfz-selected-day");days.appendChild(button);}}calendar.addEventListener("click",function(event){if(event.target.classList.contains("mfz-calendar-prev")){current.setMonth(current.getMonth()-1);render();}if(event.target.classList.contains("mfz-calendar-next")){current.setMonth(current.getMonth()+1);render();}if(event.target.dataset.date&&planned[event.target.dataset.date])selectDay(event.target.dataset.date);});document.addEventListener("submit",function(event){var form=event.target;if(!form.querySelector("input[name=\\"action\\"][value=\\"mfz_signup\\"]")&&!form.querySelector("input[name=\\"action\\"][value=\\"mfz_withdraw\\"]"))return;var field=form.querySelector("input[name=\\"mfz_return_date\\"]");if(!field){field=document.createElement("input");field.type="hidden";field.name="mfz_return_date";form.appendChild(field);}field.value=selected||"";});if(selected)selectDay(selected);else render();}());</script>'; return ob_get_clean();
 	}
