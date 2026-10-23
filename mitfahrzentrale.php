@@ -36,6 +36,7 @@ final class MFZ_Mitfahrzentrale {
 		add_shortcode( 'mitfahrzentrale_mitfahrer', array( __CLASS__, 'passenger_management_shortcode' ) );
 		add_shortcode( 'mitfahrzentrale_admin', array( __CLASS__, 'admin_shortcode' ) );
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_styles' ) );
+		add_action( 'wp_footer', array( __CLASS__, 'calendar_scroll_script' ) );
 		add_action( 'admin_post_mfz_signup', array( __CLASS__, 'signup' ) );
 		add_action( 'admin_post_mfz_withdraw', array( __CLASS__, 'withdraw' ) );
 		add_action( 'admin_post_mfz_send_confirmation', array( __CLASS__, 'send_confirmation' ) );
@@ -45,6 +46,12 @@ final class MFZ_Mitfahrzentrale {
 		add_action( 'admin_notices', array( __CLASS__, 'admin_notice' ) );
 		add_action( 'admin_menu', array( __CLASS__, 'admin_menu' ) );
 		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
+		add_filter( 'manage_' . self::POST_TYPE . '_posts_columns', array( __CLASS__, 'admin_event_columns' ) );
+		add_filter( 'manage_edit-' . self::POST_TYPE . '_sortable_columns', array( __CLASS__, 'admin_event_sortable_columns' ) );
+		add_action( 'manage_' . self::POST_TYPE . '_posts_custom_column', array( __CLASS__, 'admin_event_column_content' ), 10, 2 );
+		add_action( 'restrict_manage_posts', array( __CLASS__, 'admin_event_location_filter' ) );
+		add_action( 'pre_get_posts', array( __CLASS__, 'admin_event_orderby' ) );
+		add_action( 'pre_get_posts', array( __CLASS__, 'admin_event_filter' ) );
 		add_action( 'add_meta_boxes_' . self::INSTITUTION_POST_TYPE, array( __CLASS__, 'add_institution_meta_boxes' ) );
 		add_action( 'save_post_' . self::INSTITUTION_POST_TYPE, array( __CLASS__, 'save_institution' ), 10, 2 );
 	}
@@ -90,6 +97,88 @@ final class MFZ_Mitfahrzentrale {
 
 	public static function register_settings() {
 		register_setting( 'mfz_permissions', self::OPTION_VIEW_ROLES, array( 'sanitize_callback' => array( __CLASS__, 'sanitize_view_roles' ), 'default' => self::default_view_roles() ) );
+	}
+
+	public static function admin_event_columns( $columns ) {
+		$result = array();
+		foreach ( $columns as $key => $label ) {
+			$result[ $key ] = $label;
+			if ( 'title' === $key ) {
+				$result['mfz_date'] = 'Tagesdatum';
+				$result['mfz_location'] = 'Standort';
+				$result['mfz_items'] = 'Artikel / Fahrräder';
+			}
+		}
+		return $result;
+	}
+
+	public static function admin_event_sortable_columns( $columns ) {
+		$columns['mfz_date'] = 'mfz_date';
+		return $columns;
+	}
+
+	public static function admin_event_orderby( $query ) {
+		if ( ! is_admin() || ! $query->is_main_query() || self::POST_TYPE !== $query->get( 'post_type' ) || 'mfz_date' !== $query->get( 'orderby' ) ) {
+			return;
+		}
+		$query->set( 'meta_key', self::META_DATE );
+		$query->set( 'orderby', 'meta_value' );
+		$query->set( 'meta_type', 'DATE' );
+	}
+
+	public static function admin_event_location_filter( $post_type ) {
+		if ( self::POST_TYPE !== $post_type ) {
+			return;
+		}
+		$selected = absint( $_GET['mfz_location_filter'] ?? 0 );
+		echo '<select name="mfz_location_filter"><option value="">Alle Standorte</option>';
+		foreach ( self::locations() as $location ) {
+			printf( '<option value="%d" %s>%s</option>', absint( $location->ID ), selected( $selected, $location->ID, false ), esc_html( $location->post_title ) );
+		}
+		echo '</select>';
+	}
+
+	public static function admin_event_filter( $query ) {
+		if ( ! is_admin() || ! $query->is_main_query() || self::POST_TYPE !== $query->get( 'post_type' ) ) {
+			return;
+		}
+		$location_id = absint( $_GET['mfz_location_filter'] ?? 0 );
+		if ( $location_id ) {
+			$query->set(
+				'meta_query',
+				array(
+					array(
+						'key' => self::META_LOCATION,
+						'value' => (string) $location_id,
+						'compare' => '=',
+					),
+				)
+			);
+		}
+	}
+
+	public static function admin_event_column_content( $column, $post_id ) {
+		if ( 'mfz_date' === $column ) {
+			$date = get_post_meta( $post_id, self::META_DATE, true );
+			if ( $date ) {
+				$timestamp = strtotime( $date . ' 12:00:00' );
+				echo esc_html( $timestamp ? wp_date( get_option( 'date_format' ), $timestamp ) : $date );
+			}
+			return;
+		}
+
+		if ( 'mfz_location' === $column ) {
+			$location_id = absint( get_post_meta( $post_id, self::META_LOCATION, true ) );
+			echo esc_html( $location_id ? get_the_title( $location_id ) : '–' );
+			return;
+		}
+
+		if ( 'mfz_items' === $column ) {
+			$slots = (array) get_post_meta( $post_id, self::META_SLOTS, true );
+			$item_ids = array_unique( array_filter( array_map( 'absint', array_column( $slots, 'item_id' ) ) ) );
+			$item_titles = array_filter( array_map( 'get_the_title', $item_ids ) );
+			echo esc_html( $item_titles ? implode( ', ', $item_titles ) : '–' );
+		}
 	}
 
 	private static function default_view_roles() {
@@ -365,11 +454,28 @@ final class MFZ_Mitfahrzentrale {
 		update_post_meta( $post_id, self::META_SLOTS, $slots );
 	}
 
+	private static function is_past_slot( $event_id, $slot ) {
+		$event_date = (string) get_post_meta( $event_id, self::META_DATE, true );
+		$today = current_time( 'Y-m-d' );
+		if ( $event_date < $today ) {
+			return true;
+		}
+		if ( $event_date !== $today || empty( $slot['end'] ) || ! preg_match( '/^(\d{1,2}):(\d{2})/', (string) $slot['end'], $matches ) ) {
+			return false;
+		}
+		$end_time = sprintf( '%02d:%02d', absint( $matches[1] ), absint( $matches[2] ) );
+		return current_time( 'H:i' ) >= $end_time;
+	}
+
 	private static function redirect( $status ) {
 		$url = wp_get_referer() ?: home_url( '/' );
 		$return_date = sanitize_text_field( wp_unslash( $_POST['mfz_return_date'] ?? '' ) );
 		if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $return_date ) ) {
 			$url = add_query_arg( 'mfz_date', $return_date, $url );
+		}
+		$return_scroll = absint( $_POST['mfz_return_scroll'] ?? 0 );
+		if ( $return_scroll ) {
+			$url = add_query_arg( 'mfz_scroll', $return_scroll, $url );
 		}
 		wp_safe_redirect( add_query_arg( 'mfz_status', $status, $url ) );
 		exit;
@@ -387,6 +493,9 @@ final class MFZ_Mitfahrzentrale {
 		$slots = get_post_meta( $event_id, self::META_SLOTS, true );
 		if ( get_post_type( $event_id ) !== self::POST_TYPE || absint( get_post_meta( $event_id, self::META_LOCATION, true ) ) !== self::user_institution_id( get_current_user_id() ) || ! is_array( $slots ) || ! isset( $slots[ $slot_index ] ) ) {
 			self::redirect( 'error' );
+		}
+		if ( self::is_past_slot( $event_id, $slots[ $slot_index ] ) ) {
+			self::redirect( 'past' );
 		}
 		$user_id = get_current_user_id();
 		foreach ( $slots as $index => &$slot ) {
@@ -454,12 +563,13 @@ final class MFZ_Mitfahrzentrale {
 		$event_title = get_the_title( $event_id );
 		$date = get_post_meta( $event_id, self::META_DATE, true );
 		$institution = $location_id ? get_the_title( $location_id ) : 'nicht festgelegt';
+		$institution_address = $location_id ? self::institution_address( $location_id ) : 'nicht hinterlegt';
 		$fahrrad = ! empty( $slot['item_id'] ) ? get_the_title( absint( $slot['item_id'] ) ) : 'nicht festgelegt';
 		$passenger_count = count( array_filter( array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ) ) );
-		$subject = 'Fahrerbestätigung: ' . $event_title . ' – Slot ' . ( absint( $slot_index ) + 1 );
-		$message = "Der folgende Slot wurde als Fahrer bestätigt:\n\n";
-		$message .= "Termin: " . $event_title . "\nDatum: " . $date . "\nInstitution: " . $institution . "\n";
-		$message .= "Slot: " . ( absint( $slot_index ) + 1 ) . "\nStart: " . ( $slot['start'] ?? '' ) . "\nEnde: " . ( $slot['end'] ?? '' ) . "\n";
+		$subject = 'Terminbestätigung: ' . $event_title . ' – Slot ' . ( absint( $slot_index ) + 1 );
+		$message = "Für den folgende Slot wurde Sie als Fahrer bestätigt:\n\n";
+		$message .= "Termin: " . $event_title . "\nDatum: " . $date . "\nInstitution: " . $institution . "\nAdresse Institution: " . ( $institution_address ?: 'nicht hinterlegt' ) . "\n";
+		$message .= "Zeit Slot: " . ( absint( $slot_index ) + 1 ) . "\nStart: " . ( $slot['start'] ?? '' ) . "\nEnde: " . ( $slot['end'] ?? '' ) . "\n";
 		$message .= "Fahrrad: " . $fahrrad . "\nMitfahrer: " . $passenger_count . '/' . absint( $slot['passenger_count'] ?? 0 ) . "\n";
 		$message .= "Fahrer: " . ( $driver ? $driver->display_name : 'nicht festgelegt' ) . "\n";
 		return (bool) wp_mail( $recipients, $subject, $message );
@@ -476,7 +586,8 @@ final class MFZ_Mitfahrzentrale {
 		$allowed = array_map( 'absint', wp_list_pluck( self::location_passengers( $location_id ), 'ID' ) ); $selected = array_map( 'absint', (array) ( $_POST['passenger_ids'] ?? array() ) );
 		$selected = array_diff( array_values( array_intersect( $selected, $allowed ) ), array( absint( $slots[ $slot_index ]['driver_id'] ?? 0 ) ) );
 		$slots[ $slot_index ]['passenger_ids'] = array_slice( $selected, 0, absint( $slots[ $slot_index ]['passenger_count'] ?? 0 ) );
-		update_post_meta( $event_id, self::META_SLOTS, $slots ); self::redirect( 'passengers_saved' );
+		update_post_meta( $event_id, self::META_SLOTS, $slots );
+		self::redirect( 'passengers_saved' );
 	}
 
 	public static function add_passenger() {
@@ -499,8 +610,189 @@ final class MFZ_Mitfahrzentrale {
 			'mfz-frontend',
 			plugin_dir_url( __FILE__ ) . 'mitfahrzentrale.css',
 			array(),
-			'0.1.0'
+			'0.1.3'
 		);
+	}
+
+	public static function calendar_scroll_script() {
+		?>
+		<script>
+		document.addEventListener('click', function (event) {
+			if (!event.target.matches('.mfz-calendar-days button')) return;
+			var calendar = event.target.closest('.mfz-driver-calendar');
+			if (calendar) window.setTimeout(function () { calendar.scrollIntoView({ block: 'start' }); }, 0);
+		});
+		</script>
+		<?php
+	}
+
+	public static function institution_calendar_script() {
+		?>
+		<script>
+		(function () {
+			var calendar = document.querySelector('.mfz-institution-view .mfz-driver-calendar');
+			if (!calendar) return;
+			var events = Array.from(document.querySelectorAll('.mfz-institution-view > article'));
+			var planned = {};
+			document.querySelectorAll('.mfz-institution-view form').forEach(function (form) {
+				var eventId = form.querySelector('input[name="event_id"]');
+				var slotIndex = form.querySelector('input[name="slot_index"]');
+				if (eventId && slotIndex) {
+					form.id = 'mfz-institution-slot-' + eventId.value + '-' + slotIndex.value;
+				}
+				form.addEventListener('submit', function () {
+					var dateField = form.querySelector('input[name="mfz_return_date"]');
+					if (!dateField) {
+						dateField = document.createElement('input');
+						dateField.type = 'hidden';
+						dateField.name = 'mfz_return_date';
+						form.appendChild(dateField);
+					}
+					dateField.value = selected || '';
+					var scrollField = form.querySelector('input[name="mfz_return_scroll"]');
+					if (!scrollField) {
+						scrollField = document.createElement('input');
+						scrollField.type = 'hidden';
+						scrollField.name = 'mfz_return_scroll';
+						form.appendChild(scrollField);
+					}
+					scrollField.value = String(window.scrollY || window.pageYOffset || 0);
+				});
+			});
+			events.forEach(function (article) {
+				var match = article.textContent.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+				if (match) {
+					var date = match[3] + '-' + match[2] + '-' + match[1];
+					article.dataset.mfzDate = date;
+					planned[date] = true;
+				}
+			});
+			var requested = new URLSearchParams(window.location.search).get('mfz_date');
+			var selected = requested && planned[requested] ? requested : (events.length ? events[0].dataset.mfzDate : null);
+			var current = new Date(selected ? selected + 'T12:00:00' : new Date());
+			function pad(number) { return String(number).padStart(2, '0'); }
+			function dateKey(date) { return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()); }
+			function selectDay(date) {
+				selected = date;
+				events.forEach(function (article) { article.style.display = article.dataset.mfzDate === date ? 'block' : 'none'; });
+				render();
+				calendar.scrollIntoView({ block: 'start' });
+			}
+			function render() {
+				var year = current.getFullYear(), month = current.getMonth(), first = new Date(year, month, 1), last = new Date(year, month + 1, 0), offset = (first.getDay() + 6) % 7, days = calendar.querySelector('.mfz-calendar-days'), today = dateKey(new Date());
+				calendar.querySelector('.mfz-calendar-month').textContent = current.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+				days.innerHTML = '';
+				for (var i = 0; i < offset; i++) days.insertAdjacentHTML('beforeend', '<span class="mfz-calendar-empty"></span>');
+				for (var day = 1; day <= last.getDate(); day++) {
+					var key = dateKey(new Date(year, month, day)), button = document.createElement('button');
+					button.type = 'button'; button.textContent = day; button.dataset.date = key;
+					if (key < today) button.classList.add('mfz-past-day');
+					if (planned[key]) button.classList.add('mfz-planned-day');
+					if (planned[key] && key < today) button.classList.add('mfz-past-planned-day');
+					if (key === selected) button.classList.add('mfz-selected-day');
+					days.appendChild(button);
+				}
+			}
+			calendar.addEventListener('click', function (event) {
+				if (event.target.classList.contains('mfz-calendar-prev')) { current.setMonth(current.getMonth() - 1); render(); }
+				if (event.target.classList.contains('mfz-calendar-next')) { current.setMonth(current.getMonth() + 1); render(); }
+				if (event.target.dataset.date && planned[event.target.dataset.date]) selectDay(event.target.dataset.date);
+			});
+			if (selected) selectDay(selected); else render();
+			var scrollPosition = new URLSearchParams(window.location.search).get('mfz_scroll');
+			if (scrollPosition !== null && /^\d+$/.test(scrollPosition)) {
+				var restoreScroll = function () { window.scrollTo(0, parseInt(scrollPosition, 10) || 0); };
+				window.requestAnimationFrame(function () {
+					window.requestAnimationFrame(restoreScroll);
+				});
+				window.setTimeout(restoreScroll, 150);
+			}
+		}());
+		</script>
+		<?php
+	}
+
+	public static function admin_calendar_script() {
+		?>
+		<script>
+		(function () {
+			var calendar = document.querySelector('.mfz-admin-view .mfz-driver-calendar');
+			if (!calendar) return;
+			var events = Array.from(document.querySelectorAll('.mfz-admin-view > .mfz-admin-day'));
+			var planned = {};
+			document.querySelectorAll('.mfz-admin-view form').forEach(function (form) {
+				form.addEventListener('submit', function () {
+					var dateField = form.querySelector('input[name="mfz_return_date"]');
+					if (!dateField) {
+						dateField = document.createElement('input');
+						dateField.type = 'hidden';
+						dateField.name = 'mfz_return_date';
+						form.appendChild(dateField);
+					}
+					dateField.value = selected || '';
+					var scrollField = form.querySelector('input[name="mfz_return_scroll"]');
+					if (!scrollField) {
+						scrollField = document.createElement('input');
+						scrollField.type = 'hidden';
+						scrollField.name = 'mfz_return_scroll';
+						form.appendChild(scrollField);
+					}
+					scrollField.value = String(window.scrollY || window.pageYOffset || 0);
+				});
+			});
+			events.forEach(function (event) {
+				var match = event.textContent.match(/\d{4}-\d{2}-\d{2}/);
+				if (match) {
+					event.dataset.mfzDate = match[0];
+					planned[match[0]] = true;
+				}
+			});
+			var requested = new URLSearchParams(window.location.search).get('mfz_date');
+			var today = dateKey(new Date());
+			var selected = requested && planned[requested] ? requested : null;
+			if (!selected) events.some(function (event) { if (event.dataset.mfzDate >= today) { selected = event.dataset.mfzDate; return true; } return false; });
+			if (!selected && events.length) selected = events[events.length - 1].dataset.mfzDate;
+			var current = new Date(selected ? selected + 'T12:00:00' : new Date());
+			function pad(number) { return String(number).padStart(2, '0'); }
+			function dateKey(date) { return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()); }
+			function selectDay(date) {
+				selected = date;
+				events.forEach(function (event) { event.style.display = event.dataset.mfzDate === date ? 'block' : 'none'; });
+				render();
+				calendar.scrollIntoView({ block: 'start' });
+			}
+			function render() {
+				var year = current.getFullYear(), month = current.getMonth(), first = new Date(year, month, 1), last = new Date(year, month + 1, 0), offset = (first.getDay() + 6) % 7, days = calendar.querySelector('.mfz-calendar-days'), today = dateKey(new Date());
+				calendar.querySelector('.mfz-calendar-month').textContent = current.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+				days.innerHTML = '';
+				for (var i = 0; i < offset; i++) days.insertAdjacentHTML('beforeend', '<span class="mfz-calendar-empty"></span>');
+				for (var day = 1; day <= last.getDate(); day++) {
+					var key = dateKey(new Date(year, month, day)), button = document.createElement('button');
+					button.type = 'button'; button.textContent = day; button.dataset.date = key;
+					if (key < today) button.classList.add('mfz-past-day');
+					if (planned[key]) button.classList.add('mfz-planned-day');
+					if (planned[key] && key < today) button.classList.add('mfz-past-planned-day');
+					if (key === selected) button.classList.add('mfz-selected-day');
+					days.appendChild(button);
+				}
+			}
+			calendar.addEventListener('click', function (event) {
+				if (event.target.classList.contains('mfz-calendar-prev')) { current.setMonth(current.getMonth() - 1); render(); }
+				if (event.target.classList.contains('mfz-calendar-next')) { current.setMonth(current.getMonth() + 1); render(); }
+				if (event.target.dataset.date && planned[event.target.dataset.date]) selectDay(event.target.dataset.date);
+			});
+			if (selected) selectDay(selected); else render();
+			var scrollPosition = new URLSearchParams(window.location.search).get('mfz_scroll');
+			if (scrollPosition !== null && /^\d+$/.test(scrollPosition)) {
+				var restoreScroll = function () { window.scrollTo(0, parseInt(scrollPosition, 10) || 0); };
+				window.requestAnimationFrame(function () {
+					window.requestAnimationFrame(restoreScroll);
+				});
+				window.setTimeout(restoreScroll, 150);
+			}
+		}());
+		</script>
+		<?php
 	}
 
 	public static function frontend_styles() {
@@ -512,13 +804,11 @@ final class MFZ_Mitfahrzentrale {
 		if ( ! self::can_view( 'admin' ) ) {
 			return '<p>Für diese Organisatoransicht ist keine Berechtigung vorhanden.</p>';
 		}
-		$show_past = isset( $_GET['mfz_show_past'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['mfz_show_past'] ) );
-		$date_filter = array( 'key' => self::META_DATE, 'value' => current_time( 'Y-m-d' ), 'compare' => $show_past ? '<' : '>=', 'type' => 'DATE' );
-		$query = new WP_Query( array( 'post_type' => self::POST_TYPE, 'post_status' => 'publish', 'posts_per_page' => $show_past ? 7 : -1, 'meta_query' => array( $date_filter ), 'meta_key' => self::META_DATE, 'orderby' => 'meta_value', 'order' => $show_past ? 'DESC' : 'ASC' ) );
+		$query = new WP_Query( array( 'post_type' => self::POST_TYPE, 'post_status' => 'publish', 'posts_per_page' => -1, 'meta_key' => self::META_DATE, 'orderby' => 'meta_value', 'order' => 'ASC' ) );
 		ob_start();
-		echo '<div class="mfz-admin-view"><h2>Organisatoransicht</h2><p><a class="button" href="' . esc_url( $show_past ? remove_query_arg( 'mfz_show_past' ) : add_query_arg( 'mfz_show_past', '1' ) ) . '">' . ( $show_past ? 'Aktuelle Termine anzeigen' : 'Letzte 7 vergangenen Termine anzeigen' ) . '</a></p>';
+		echo '<div class="mfz-admin-view"><div class="mfz-driver-calendar" aria-label="Kalender für geplante Termine"><div class="mfz-calendar-header"><button type="button" class="mfz-calendar-prev" aria-label="Vorheriger Monat">‹</button><strong class="mfz-calendar-month"></strong><button type="button" class="mfz-calendar-next" aria-label="Nächster Monat">›</button></div><div class="mfz-calendar-weekdays"><span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span></div><div class="mfz-calendar-days"></div></div><h2>Organisatoransicht</h2>';
 		if ( ! $query->have_posts() ) {
-			echo '<p>' . ( $show_past ? 'Keine vergangenen Termine vorhanden.' : 'Aktuell sind keine Termine verfügbar.' ) . '</p>';
+			echo '<p>Aktuell sind keine Termine verfügbar.</p>';
 		}
 		while ( $query->have_posts() ) {
 			$query->the_post();
@@ -575,6 +865,7 @@ final class MFZ_Mitfahrzentrale {
 			}
 			echo '</div></details>';
 		}
+		self::admin_calendar_script();
 		wp_reset_postdata();
 		echo '</div><script>(function(){document.addEventListener("click",function(e){if(!e.target.classList.contains("mfz-print-day"))return;var day=e.target.closest(".mfz-admin-day"),clone=day.cloneNode(true),button=clone.querySelector(".mfz-print-day"),confirmation=clone.querySelectorAll(".mfz-send-confirmation"),printWindow=window.open("","_blank","width=900,height=700");if(!printWindow)return;if(button)button.remove();confirmation.forEach(function(form){form.remove();});printWindow.document.open();printWindow.document.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>Tag drucken</title><style>body{font-family:Arial,sans-serif;margin:10mm;color:#111}.mfz-slot{margin:16px 0;padding:12px;border:1px solid #dcdcde;border-radius:5px;background:#fff}h3{margin-top:0}h4{margin-top:0}</style></head><body></body></html>");printWindow.document.close();printWindow.document.body.appendChild(clone);printWindow.focus();printWindow.setTimeout(function(){printWindow.print();printWindow.close();},250);});}());</script>';
 		return ob_get_clean();
@@ -592,9 +883,10 @@ final class MFZ_Mitfahrzentrale {
 		$location_id = self::user_institution_id( get_current_user_id() );
 		if ( ! self::can_view( 'institution' ) || ! $location_id || ! self::can_manage_institution( $location_id ) ) return '<p>Für diese Institutionsansicht ist keine Berechtigung oder Institution hinterlegt.</p>';
 		$query = new WP_Query( array( 'post_type' => self::POST_TYPE, 'post_status' => 'publish', 'posts_per_page' => -1, 'meta_query' => array( array( 'key' => self::META_LOCATION, 'value' => $location_id, 'compare' => '=' ), array( 'key' => self::META_DATE, 'value' => current_time( 'Y-m-d' ), 'compare' => '>=', 'type' => 'DATE' ) ), 'orderby' => 'meta_value', 'meta_key' => self::META_DATE, 'order' => 'ASC' ) );
-		ob_start(); echo '<div class="mfz-institution-view"><h2>Mitfahrer – ' . esc_html( get_the_title( $location_id ) ) . '</h2><p><strong>Adresse:</strong> ' . esc_html( self::institution_address( $location_id ) ?: 'nicht hinterlegt' ) . '</p>';
+		ob_start(); echo '<div class="mfz-institution-view"><div class="mfz-driver-calendar" aria-label="Kalender für geplante Termine"><div class="mfz-calendar-header"><button type="button" class="mfz-calendar-prev" aria-label="Vorheriger Monat">‹</button><strong class="mfz-calendar-month"></strong><button type="button" class="mfz-calendar-next" aria-label="Nächster Monat">›</button></div><div class="mfz-calendar-weekdays"><span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span></div><div class="mfz-calendar-days"></div></div><h2>Mitfahrer – ' . esc_html( get_the_title( $location_id ) ) . '</h2><p><strong>Adresse:</strong> ' . esc_html( self::institution_address( $location_id ) ?: 'nicht hinterlegt' ) . '</p>';
 		if ( ! $query->have_posts() ) echo '<p>Keine Termine für diese Institution vorhanden.</p>';
-		while ( $query->have_posts() ) { $query->the_post(); $event_id = get_the_ID(); $slots = (array) get_post_meta( $event_id, self::META_SLOTS, true ); echo '<article><h3>' . esc_html( get_the_title() ) . '</h3><p>' . esc_html( get_post_meta( $event_id, self::META_DATE, true ) ) . '</p>'; $slot_number = 1; foreach ( $slots as $index => $slot ) { $passengers = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $slot_passengers = self::location_passengers( $location_id ); $passenger_names = array(); foreach ( $slot_passengers as $passenger ) { if ( in_array( absint( $passenger->ID ), $passengers, true ) ) $passenger_names[] = $passenger->display_name; } $complete = ! empty( $slot['driver_id'] ) && count( $passengers ) >= absint( $slot['passenger_count'] ?? 0 ); echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:12px 0;padding:8px;border:1px solid #ddd"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ) . '<br><strong>Fahrer:</strong> ' . esc_html( ! empty( $slot['driver_id'] ) ? get_the_author_meta( 'display_name', absint( $slot['driver_id'] ) ) : 'noch frei' ) . '<br><p><strong>Eingetragene Mitfahrer (' . count( $passengers ) . '/' . absint( $slot['passenger_count'] ?? 0 ) . '):</strong></p>'; if ( $passenger_names ) { echo '<ul style="margin-top:0;padding-left:0;list-style-position:inside">'; foreach ( $passenger_names as $passenger_name ) echo '<li>' . esc_html( $passenger_name ) . '</li>'; echo '</ul>'; } else echo '<p>keine</p>'; wp_nonce_field( 'mfz_institution_passengers', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="mfz_institution_save_passengers"><input type="hidden" name="event_id" value="' . $event_id . '"><input type="hidden" name="slot_index" value="' . absint( $index ) . '">'; self::searchable_passenger_dropdown( 'passenger_ids', $slot_passengers, $passengers, 'Mitfahrer auswählen und suchen' ); echo '<button type="submit">Mitfahrer speichern</button></form>'; } echo '</article>'; }
+		while ( $query->have_posts() ) { $query->the_post(); $event_id = get_the_ID(); $slots = (array) get_post_meta( $event_id, self::META_SLOTS, true ); echo '<article><h3>' . esc_html( get_the_title() ) . '</h3><p>' . esc_html( get_post_meta( $event_id, self::META_DATE, true ) ) . '</p>'; $slot_number = 1; foreach ( $slots as $index => $slot ) { $passengers = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $slot_passengers = self::location_passengers( $location_id ); $passenger_names = array(); foreach ( $slot_passengers as $passenger ) { if ( in_array( absint( $passenger->ID ), $passengers, true ) ) $passenger_names[] = $passenger->display_name; } $complete = ! empty( $slot['driver_id'] ) && count( $passengers ) >= absint( $slot['passenger_count'] ?? 0 ); $item_id = absint( $slot['item_id'] ?? 0 ); echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:12px 0;padding:8px;border:1px solid #ddd"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ); if ( $item_id ) { echo '<br><strong>Fahrrad:</strong> ' . esc_html( get_the_title( $item_id ) ) . self::item_image( $item_id ); } echo '<br><strong>Fahrer:</strong> ' . esc_html( ! empty( $slot['driver_id'] ) ? get_the_author_meta( 'display_name', absint( $slot['driver_id'] ) ) : 'noch frei' ) . '<br><p><strong>Eingetragene Mitfahrer (' . count( $passengers ) . '/' . absint( $slot['passenger_count'] ?? 0 ) . '):</strong></p>'; if ( $passenger_names ) { echo '<table class="mfz-passengers-table"><thead><tr><th>Name</th></tr></thead><tbody>'; foreach ( $passenger_names as $passenger_name ) echo '<tr><td>' . esc_html( $passenger_name ) . '</td></tr>'; echo '</tbody></table>'; } else echo '<p>keine</p>'; wp_nonce_field( 'mfz_institution_passengers', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="mfz_institution_save_passengers"><input type="hidden" name="event_id" value="' . $event_id . '"><input type="hidden" name="slot_index" value="' . absint( $index ) . '">'; self::searchable_passenger_dropdown( 'passenger_ids', $slot_passengers, $passengers, 'Mitfahrer auswählen und suchen' ); echo '<button type="submit">Mitfahrer speichern</button></form>'; } echo '</article>'; }
+		self::institution_calendar_script();
 		wp_reset_postdata(); echo '</div>'; $output = ob_get_clean(); $output = preg_replace_callback( '/\\b(\\d{4})-(\\d{2})-(\\d{2})\\b/', static function ( $matches ) { return '<strong>Datum:</strong> ' . esc_html( $matches[3] . '.' . $matches[2] . '.' . $matches[1] ); }, $output ); return $output;
 	}
 
@@ -618,9 +910,9 @@ final class MFZ_Mitfahrzentrale {
 			 echo '<article class="mfz-event"><h3>' . esc_html( get_the_title() ) . '</h3><p><strong>Datum:</strong> ' . esc_html( get_post_meta( $id, self::META_DATE, true ) ) . '</p><p><strong>Standort:</strong> ' . esc_html( $location_id ? get_the_title( $location_id ) : 'nicht festgelegt' ) . '<br><strong>Adresse:</strong> ' . esc_html( $street ?: ( $location_id ? self::institution_address( $location_id ) : 'nicht hinterlegt' ) ) . ( $postcode_city ? '<br>' . esc_html( $postcode_city ) : '' ) . '</p>';
 			if ( $item_ids ) { echo '<p><strong>Fahrräder:</strong> ' . esc_html( implode( ', ', array_filter( array_map( 'get_the_title', $item_ids ) ) ) ) . '</p>'; }
 			$current_user_id = get_current_user_id(); $current_user_location = absint( get_user_meta( $current_user_id, '_mfz_location_id', true ) );
-			$slot_number = 1; foreach ( (array) $slots as $index => $slot ) { $driver_id = absint( $slot['driver_id'] ?? 0 ); $mine = $driver_id === $current_user_id; $item_id = absint( $slot['item_id'] ?? 0 ); $capacity = absint( $slot['passenger_count'] ?? 0 ); $passenger_ids = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $passenger_count = count( array_filter( $passenger_ids ) ); $complete = $driver_id > 0 && $passenger_count >= $capacity; echo '<div class="mfz-slot"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ); if ( $item_id ) { echo '<br><strong>Fahrrad:</strong> ' . esc_html( get_the_title( $item_id ) ) . self::item_image( $item_id ); } echo '<br><strong>Mitfahrer:</strong> ' . $passenger_count . '/' . $capacity . '<br><strong>Fahrer:</strong> ' . esc_html( $driver_id ? get_the_author_meta( 'display_name', $driver_id ) : 'noch frei' ); if ( is_user_logged_in() && ( $mine || ! $driver_id ) ) { echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline;margin-left:10px">'; wp_nonce_field( 'mfz_slot_action', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="' . ( $mine ? 'mfz_withdraw' : 'mfz_signup' ) . '"><input type="hidden" name="event_id" value="' . $id . '"><input type="hidden" name="slot_index" value="' . $index . '"><button type="submit">' . ( $mine ? 'Als Fahrer austragen' : 'Als Fahrer eintragen' ) . '</button></form>'; } echo '</div>'; }
+			$slot_number = 1; foreach ( (array) $slots as $index => $slot ) { $driver_id = absint( $slot['driver_id'] ?? 0 ); $mine = $driver_id === $current_user_id; $item_id = absint( $slot['item_id'] ?? 0 ); $capacity = absint( $slot['passenger_count'] ?? 0 ); $passenger_ids = array_map( 'absint', (array) ( $slot['passenger_ids'] ?? array() ) ); $passenger_count = count( array_filter( $passenger_ids ) ); $complete = $driver_id > 0 && $passenger_count >= $capacity; $slot_is_past = self::is_past_slot( $id, $slot ); echo '<div class="mfz-slot"><h4 style="margin-top:0">Slot ' . $slot_number++ . ( $complete ? ' <span style="color:#168a35;font-size:1.3em;font-weight:bold" title="Fahrer und Mitfahrer vollständig">✓</span>' : '' ) . '</h4><strong>Start:</strong> ' . esc_html( $slot['start'] ?? '' ) . ' · <strong>Ende:</strong> ' . esc_html( $slot['end'] ?? '' ); if ( $item_id ) { echo '<br><strong>Fahrrad:</strong> ' . esc_html( get_the_title( $item_id ) ) . self::item_image( $item_id ); } echo '<br><strong>Mitfahrer:</strong> ' . $passenger_count . '/' . $capacity . '<br><strong>Fahrer:</strong> ' . esc_html( $driver_id ? get_the_author_meta( 'display_name', $driver_id ) : 'noch frei' ); if ( is_user_logged_in() && ( $mine || ! $driver_id ) ) { echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline;margin-left:10px">'; wp_nonce_field( 'mfz_slot_action', 'mfz_action_nonce' ); echo '<input type="hidden" name="action" value="' . ( $mine ? 'mfz_withdraw' : 'mfz_signup' ) . '"><input type="hidden" name="event_id" value="' . $id . '"><input type="hidden" name="slot_index" value="' . $index . '"><button type="submit"' . ( $slot_is_past ? ' disabled title="Dieser Zeitslot ist bereits vergangen."' : '' ) . '>' . ( $mine ? 'Als Fahrer austragen' : 'Als Fahrer eintragen' ) . '</button></form>'; } echo '</div>'; }
 			echo '</article>'; }
-		wp_reset_postdata(); echo '</div><script>(function(){var calendar=document.querySelector(".mfz-driver-calendar");if(!calendar)return;var events=Array.from(document.querySelectorAll(".mfz-events > article.mfz-event")),planned={};events.forEach(function(article){var match=article.textContent.match(/\\d{4}-\\d{2}-\\d{2}/);if(match){article.dataset.mfzDate=match[0];planned[match[0]]=true;}});var requested=new URLSearchParams(window.location.search).get("mfz_date"),selected=requested&&planned[requested]?requested:(events.length?events[0].dataset.mfzDate:null),current=new Date(selected?selected+"T12:00:00":new Date());function pad(number){return String(number).padStart(2,"0");}function dateKey(date){return date.getFullYear()+"-"+pad(date.getMonth()+1)+"-"+pad(date.getDate());}function selectDay(date){selected=date;events.forEach(function(article){article.style.display=article.dataset.mfzDate===date?"block":"none";});render();}function render(){var year=current.getFullYear(),month=current.getMonth(),first=new Date(year,month,1),last=new Date(year,month+1,0),offset=(first.getDay()+6)%7,days=calendar.querySelector(".mfz-calendar-days");calendar.querySelector(".mfz-calendar-month").textContent=current.toLocaleDateString("de-DE",{month:"long",year:"numeric"});days.innerHTML="";for(var i=0;i<offset;i++)days.insertAdjacentHTML("beforeend","<span class=\"mfz-calendar-empty\"></span>");for(var day=1;day<=last.getDate();day++){var key=dateKey(new Date(year,month,day)),button=document.createElement("button");button.type="button";button.textContent=day;button.dataset.date=key;if(planned[key])button.classList.add("mfz-planned-day");if(key===selected)button.classList.add("mfz-selected-day");days.appendChild(button);}}calendar.addEventListener("click",function(event){if(event.target.classList.contains("mfz-calendar-prev")){current.setMonth(current.getMonth()-1);render();}if(event.target.classList.contains("mfz-calendar-next")){current.setMonth(current.getMonth()+1);render();}if(event.target.dataset.date&&planned[event.target.dataset.date])selectDay(event.target.dataset.date);});document.addEventListener("submit",function(event){var form=event.target;if(!form.querySelector("input[name=\\"action\\"][value=\\"mfz_signup\\"]")&&!form.querySelector("input[name=\\"action\\"][value=\\"mfz_withdraw\\"]"))return;var field=form.querySelector("input[name=\\"mfz_return_date\\"]");if(!field){field=document.createElement("input");field.type="hidden";field.name="mfz_return_date";form.appendChild(field);}field.value=selected||"";});if(selected)selectDay(selected);else render();}());</script>'; return ob_get_clean();
+		wp_reset_postdata(); echo '</div><script>(function(){var calendar=document.querySelector(".mfz-driver-calendar");if(!calendar)return;var events=Array.from(document.querySelectorAll(".mfz-events > article.mfz-event")),planned={};events.forEach(function(article){var match=article.textContent.match(/\\d{4}-\\d{2}-\\d{2}/);if(match){article.dataset.mfzDate=match[0];planned[match[0]]=true;}});var requested=new URLSearchParams(window.location.search).get("mfz_date"),selected=requested&&planned[requested]?requested:(events.length?events[0].dataset.mfzDate:null),current=new Date(selected?selected+"T12:00:00":new Date());function pad(number){return String(number).padStart(2,"0");}function dateKey(date){return date.getFullYear()+"-"+pad(date.getMonth()+1)+"-"+pad(date.getDate());}function selectDay(date){selected=date;events.forEach(function(article){article.style.display=article.dataset.mfzDate===date?"block":"none";});render();}function render(){var year=current.getFullYear(),month=current.getMonth(),first=new Date(year,month,1),last=new Date(year,month+1,0),offset=(first.getDay()+6)%7,days=calendar.querySelector(".mfz-calendar-days"),today=dateKey(new Date());calendar.querySelector(".mfz-calendar-month").textContent=current.toLocaleDateString("de-DE",{month:"long",year:"numeric"});days.innerHTML="";for(var i=0;i<offset;i++)days.insertAdjacentHTML("beforeend","<span class=\"mfz-calendar-empty\"></span>");for(var day=1;day<=last.getDate();day++){var key=dateKey(new Date(year,month,day)),button=document.createElement("button");button.type="button";button.textContent=day;button.dataset.date=key;if(key<today)button.classList.add("mfz-past-day");if(planned[key])button.classList.add("mfz-planned-day");if(planned[key]&&key<today)button.classList.add("mfz-past-planned-day");if(key===selected)button.classList.add("mfz-selected-day");days.appendChild(button);}}calendar.addEventListener("click",function(event){if(event.target.classList.contains("mfz-calendar-prev")){current.setMonth(current.getMonth()-1);render();}if(event.target.classList.contains("mfz-calendar-next")){current.setMonth(current.getMonth()+1);render();}if(event.target.dataset.date&&planned[event.target.dataset.date])selectDay(event.target.dataset.date);});document.addEventListener("submit",function(event){var form=event.target;if(!form.querySelector("input[name=\\"action\\"][value=\\"mfz_signup\\"]")&&!form.querySelector("input[name=\\"action\\"][value=\\"mfz_withdraw\\"]"))return;var field=form.querySelector("input[name=\\"mfz_return_date\\"]");if(!field){field=document.createElement("input");field.type="hidden";field.name="mfz_return_date";form.appendChild(field);}field.value=selected||"";});if(selected)selectDay(selected);else render();}());</script>'; return ob_get_clean();
 	}
 }
 

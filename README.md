@@ -27,6 +27,8 @@ Die sichtbaren Rollen werden unter **Mitfahrzentrale → Berechtigungen → Fahr
 
 Zeigt einer Institution die zukünftigen Termine ihres eigenen Standorts. Je Slot werden unter anderem Fahrer, Mitfahrer und das Mitfahrer-Auswahlfeld angezeigt. Die Mitfahrer können dort gespeichert und verwaltet werden.
 
+Die Seite enthält ebenfalls die Monatskalender-Ansicht der Fahreransicht. Termine können über den Kalender ausgewählt werden; anschließend wird nur der gewählte Tag angezeigt.
+
 Voraussetzungen:
 
 - Benutzer ist angemeldet.

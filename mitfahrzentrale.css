@@ -54,6 +54,14 @@
 	vertical-align: bottom;
 }
 
+.mfz-events .mfz-slot button:disabled {
+	opacity: .5;
+	color: #666;
+	background: #e5e5e5;
+	border-color: #c3c4c7;
+	cursor: not-allowed;
+}
+
 .mfz-events .mfz-slot::after {
 	content: "";
 	display: block;
@@ -76,6 +84,41 @@
 	max-height: 100px;
 	object-fit: contain;
 	border-radius: 4px;
+}
+
+.mfz-institution-view .mfz-bike-image-wrapper {
+	position: static;
+	display: block;
+	margin: 8px 0;
+}
+
+.mfz-passengers-table {
+	width: 100%;
+	margin: 8px 0 16px;
+	border-collapse: collapse;
+}
+
+.mfz-passengers-table th,
+.mfz-passengers-table td {
+	padding: 6px 8px;
+	border: 1px solid #dcdcde;
+	text-align: left;
+}
+
+.mfz-passengers-table th {
+	background: #f6f7f7;
+}
+
+.mfz-institution-view form {
+	position: relative;
+	padding-right: 210px !important;
+}
+
+.mfz-institution-view form .mfz-bike-image-wrapper {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	margin: 0;
 }
 
 .mfz-driver-calendar {
@@ -122,6 +165,7 @@
 	border: 1px solid transparent;
 	border-radius: 4px;
 	background: #fff;
+	color: #4a4a4a;
 	cursor: pointer;
 }
 
@@ -129,6 +173,18 @@
 	border-color: #168a35;
 	background: #d9f2df;
 	font-weight: bold;
+}
+
+.mfz-calendar-days .mfz-past-day {
+	border-color: #dcdcde;
+	background: #f0f0f1;
+	color: #8c8f94;
+}
+
+.mfz-calendar-days .mfz-past-planned-day {
+	border-color: #8bb8d8;
+	background: #dceefa;
+	color: #315b78;
 }
 
 .mfz-calendar-days .mfz-selected-day {
@@ -161,6 +217,15 @@
 	.mfz-bike-image {
 		max-width: 100%;
 		max-height: 180px;
+	}
+
+	.mfz-institution-view form {
+		padding-right: 12px !important;
+	}
+
+	.mfz-institution-view form .mfz-bike-image-wrapper {
+		position: static;
+		margin: 10px 0;
 	}
 }
 
