@@ -668,7 +668,10 @@ final class MFZ_Mitfahrzentrale {
 				}
 			});
 			var requested = new URLSearchParams(window.location.search).get('mfz_date');
-			var selected = requested && planned[requested] ? requested : (events.length ? events[0].dataset.mfzDate : null);
+			var today = dateKey(new Date());
+			var selected = requested && planned[requested] ? requested : null;
+			if (!selected) events.some(function (event) { if (event.dataset.mfzDate >= today) { selected = event.dataset.mfzDate; return true; } return false; });
+			if (!selected && events.length) selected = events[events.length - 1].dataset.mfzDate;
 			var current = new Date(selected ? selected + 'T12:00:00' : new Date());
 			function pad(number) { return String(number).padStart(2, '0'); }
 			function dateKey(date) { return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()); }
